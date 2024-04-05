@@ -7,9 +7,9 @@ const { default: weaviate } = require('weaviate-client')
 
 
 
-// run()
+run()
 
-direct()
+// direct()
 
 async function direct() {
   const client = await weaviate.connectToWCS(
@@ -18,12 +18,14 @@ async function direct() {
       headers: { 'X-OpenAI-Api-Key': process.env.SENECA_OPENAI_KEY }
     } 
   )
-  
-  // console.log(client)
+
+  console.log(client)
+
   /*
-  const c02c = await client.collections.create({
-    name: 'c02',
-    vectorizer: 'text2vec-openai',
+  const c04c = await client.collections.create({
+    name: 'C04',
+    // vectorizer: 'text2vec-openai',
+    vectorizer: weaviate.configure.vectorizer.text2VecOpenAI(),
     properties: [
       {
         name: 'chunk',
@@ -32,78 +34,74 @@ async function direct() {
     ],
   })
 
-  console.log('c0cg', c02c)
+  console.log('c0cg', c04c)
   */
-
   
-  const c02g = await client.collections.get({name:'c02'})
+  
+  // Const c04g = await client.collections.get({name:'c04'})
+  const c04g = await client.collections.get('C04')
 
-  // console.log('c02g', c02g)
+  // console.log('c04g', c04g)
 
 
-  const d01 = await c02g.data.insert({
+  const d01 = await c04g.data.insert({
     properties: {
-      chunk: 'd01a',
+      chunk: 'd01b',
     },
   })
 
   console.log(d01)
+
+
+  const list = await c04g.query.nearText(['d01a'], {
+    limit: 2,
+    returnProperties: ['chunk'],
+  })
+
+  console.dir(list,{depth:null})
 }
 
 
 
 async function run() {
   const seneca = Seneca({ legacy: false })
-    .test()
-    .use('promisify')
+        .test()
+        .use('promisify')
         .use('entity')
-  /*
-    .use('..', {
-      map: {
-        'foo/chunk': '*',
-      },
-      index: {
-        exact: process.env.SENECA_WEAVIATE_TEST_INDEX,
-      },
-      weaviate: {
-        node: process.env.SENECA_WEAVIATE_TEST_NODE,
-      },
-    })
-*/
+        .use('..', {
+          map: {
+            'foo/chunk': '*',
+          },
+          collection: {},
+          weaviate: {
+          },
+        })
+
   await seneca.ready()
 
-  // console.log(await seneca.entity('bar/qaz').data$({q:1}).save$())
-
-  /*
   const save0 = await seneca.entity('foo/chunk')
         .make$()
         .data$({
           x:3,
           o:{m:'M2',n:3}, 
           text: 't03',
-          vector: [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.6],
-          directive$:{vector$:true},
+          vector: 'abc'
         })
         .save$()
   console.log('save0', save0)
-  */
 
-  // const id = '1%3A0%3Au0rACY4BB33NxQZdwDrQ'
-  // const id = 'notanid'
-  //const id = '1%3A0%3AvUrfCY4BB33NxQZd-DrZ'
-  const id = '1%3A0%3AvUrfCY4BB33NxQZd-DrQ'
+  const id = save0.id
   const load0 = await seneca.entity('foo/chunk').load$(id)
   console.log('load0', load0)
 
-  /*
   const list0 = await seneca.entity('foo/chunk').list$({
-    // x:2
-    directive$:{vector$:true},
-    vector:[0.1,0.1,0.2,0.3,0.4,0.5,0.6,0.7],
+    vector:'abc'
   })
   console.log('list0', list0)
 
+  const list1 = await seneca.entity('foo/chunk').list$({
+    vector:'abd'
+  })
+  console.log('list1', list1)
 
-  console.log(await seneca.entity('bar/qaz').list$())
-  */
 }

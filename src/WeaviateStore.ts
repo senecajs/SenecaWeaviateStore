@@ -1,47 +1,45 @@
 /* Copyright (c) 2024 Seneca contributors, MIT License */
 
-import { AwsSigv4Signer } from '@weaviate-project/weaviate/aws'
-import { Client } from '@weaviate-project/weaviate'
-import { defaultProvider } from '@aws-sdk/credential-provider-node'
+const { default: Weaviate } = require('weaviate-client')
 
 import { Gubu } from 'gubu'
+import { StringDecoder } from 'string_decoder'
 
-const { Open, Any } = Gubu
+const { Child, Any } = Gubu
 
 type Options = {
   debug: boolean
   map?: any
-  index: {
-    prefix: string
-    suffix: string
-    map: Record<string, string>
-    exact: string
-  }
   field: {
     zone: { name: string }
     base: { name: string }
     name: { name: string }
     vector: { name: string }
-  }
-  cmd: {
-    list: {
-      size: number
-    }
-  }
-  aws: any
-  weaviate: any
+  },
+  url: string,
+  client: any
+  collection: Record<string, any>,
 }
 
 export type WeaviateStoreOptions = Partial<Options>
+
 
 function WeaviateStore(this: any, options: Options) {
   const seneca: any = this
 
   const init = seneca.export('entity/init')
 
-  let desc: any = 'WeaviateStore'
+  const colmap: Record<string, any> = {}
 
   let client: any
+  let desc: any = 'WeaviateStore'
+
+
+  Object.entries(options.collection).map((entry: any[]) => {
+    entry[1].name = entry[1].name || entry[0]
+    entry[1].key = entry[0]
+  })
+
 
   let store = {
     name: 'WeaviateStore',
@@ -51,10 +49,12 @@ function WeaviateStore(this: any, options: Options) {
       const ent = msg.ent
 
       const canon = ent.canon$({ object: true })
-      const index = resolveIndex(ent, options)
+      const coldef = resolveColDef(ent, options)
+      const col = getCollection(coldef, ent)
 
       const body = ent.data$(false)
 
+      // TODO: move to entity as a util?
       const fieldOpts: any = options.field
 
         ;['zone', 'base', 'name'].forEach((n: string) => {
@@ -223,21 +223,53 @@ function WeaviateStore(this: any, options: Options) {
   desc = meta.desc
 
   seneca.prepare(async function (this: any) {
-    const region = options.aws.region
-    const node = options.weaviate.node
+    client = await Weaviate.connectToWCS(
+      options.url,
+      options.client
+    )
 
-    client = new Client({
-      ...AwsSigv4Signer({
-        region,
-        service: 'aoss',
-        getCredentials: () => {
-          const credentialsProvider = defaultProvider()
-          return credentialsProvider()
-        },
-      }),
-      node,
-    })
+    const coldefs = Object.values(options.collection)
+    for (let cdI = 0; cdI < coldefs.length; cdI++) {
+      const coldef = coldefs[cdI]
+
+      let col
+
+      try {
+        col = await client.collections.get(coldef.name)
+      }
+      catch (e: any) {
+        seneca.log.warn('collection-not-exist', { name: coldef.name })
+      }
+
+      if (null == col) {
+        col = await client.collections.create({
+          name: coldef.name,
+          ...coldef.config
+        })
+      }
+
+      colmap[coldef.key] = col
+    }
   })
+
+
+  function getCollection(coldef: any, ent: any) {
+    if (null === coldef) {
+      seneca.fail('no-collection-defined', { ent })
+    }
+
+    // options.collection might use entity canon as key - not a valid weaviate collection name
+    const key = coldef.key
+    const name = coldef.name
+    const col = colmap[key] || colmap[name]
+
+    if (null === col) {
+      seneca.fail('no-collection-found', { key, name, ent })
+    }
+
+    return col
+  }
+
 
   return {
     name: store.name,
@@ -250,99 +282,28 @@ function WeaviateStore(this: any, options: Options) {
   }
 }
 
-function buildQuery(spec: { index: string; options: any; msg: any }) {
-  const { index, options, msg } = spec
 
-  const q = msg.q || {}
-
-  let query: any = {
-    index,
-    body: {
-      size: msg.size$ || options.cmd.list.size,
-      _source: {
-        excludes: [options.field.vector.name].filter((n) => '' !== n),
-      },
-      query: {},
-    },
-  }
-
-  let excludeKeys: any = { vector: 1 }
-
-  const parts = []
-
-  for (let k in q) {
-    if (!excludeKeys[k] && !k.match(/\$/)) {
-      parts.push({
-        match: { [k]: q[k] },
-      })
-    }
-  }
-
-  const vector$ = msg.vector$ || q.directive$?.vector$
-  if (vector$) {
-    parts.push({
-      knn: {
-        vector: {
-          vector: q.vector,
-          k: null == vector$.k ? 11 : vector$.k,
-        },
-      },
-    })
-  }
-
-  if (0 === parts.length) {
-    query = null
-  } else if (1 === parts.length) {
-    query.body.query = parts[0]
-  } else {
-    query.body.query = {
-      bool: {
-        must: parts,
-      },
-    }
-  }
-
-  return query
-}
-
-function resolveIndex(ent: any, options: Options) {
-  let indexOpts = options.index
-  if ('' != indexOpts.exact && null != indexOpts.exact) {
-    return indexOpts.exact
+function resolveColDef(ent: any, options: Options) {
+  let coldef = options.collection.default
+  if (null != coldef) {
+    return coldef
   }
 
   let canonstr = ent.canon$({ string: true })
-  indexOpts.map = indexOpts.map || {}
-  if ('' != indexOpts.map[canonstr] && null != indexOpts.map[canonstr]) {
-    return indexOpts.map[canonstr]
+  let coldefmap = options.collection
+  if (null != coldefmap[canonstr]) {
+    return coldefmap[canonstr]
   }
 
-  let prefix = indexOpts.prefix
-  let suffix = indexOpts.suffix
-
-  prefix = '' == prefix || null == prefix ? '' : prefix + '_'
-  suffix = '' == suffix || null == suffix ? '' : '_' + suffix
-
-  // TOOD: need ent.canon$({ external: true }) : foo/bar -> foo_bar
-  let infix = ent
-    .canon$({ string: true })
-    .replace(/-\//g, '')
-    .replace(/\//g, '_')
-
-  return prefix + infix + suffix
+  return null
 }
 
+
+
 // Default options.
-const defaults: Options = {
+const defaults = {
   debug: false,
   map: Any(),
-  index: {
-    prefix: '',
-    suffix: '',
-    map: {},
-    exact: '',
-  },
-
   // '' === name => do not inject
   field: {
     zone: { name: 'zone' },
@@ -350,25 +311,14 @@ const defaults: Options = {
     name: { name: 'name' },
     vector: { name: 'vector' },
   },
-
-  cmd: {
-    list: {
-      size: 11,
-    },
-  },
-
-  aws: Open({
-    region: 'us-east-1',
-  }),
-
-  weaviate: Open({
-    node: 'NODE-URL',
-  }),
+  url: String,
+  client: {},
+  collection: Child({}),
 }
 
 Object.assign(WeaviateStore, {
   defaults,
-  utils: { resolveIndex },
+  utils: { resolveColDef },
 })
 
 export default WeaviateStore
